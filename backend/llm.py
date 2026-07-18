@@ -1,12 +1,15 @@
 """
-Обёртка над Anthropic API. Ключ берётся из переменной окружения
-ANTHROPIC_API_KEY (см. .env.example). Промпт жёстко ограничивает
-модель контекстом из найденных чанков — если ответа в документах нет,
-бот обязан честно сказать, что не знает, а не выдумывать (без этого
-RAG-бот быстро теряет доверие клиентов).
+Обёртка над Groq API (бесплатный тариф, без привязки карты).
+Ключ берётся из переменной окружения GROQ_API_KEY (см. .env.example).
+Groq полностью совместим с OpenAI SDK, поэтому используется пакет openai
+с указанием base_url на Groq.
+
+Промпт жёстко ограничивает модель контекстом из найденных чанков — если
+ответа в документах нет, бот обязан честно сказать, что не знает, а не
+выдумывать (без этого RAG-бот быстро теряет доверие клиентов).
 """
 import os
-from anthropic import Anthropic
+from openai import OpenAI
 
 SYSTEM_PROMPT = """Ты — ассистент поддержки компании. Отвечай на вопросы \
 клиентов ТОЛЬКО на основе предоставленного контекста из документов компании.
@@ -18,6 +21,16 @@ SYSTEM_PROMPT = """Ты — ассистент поддержки компани
 3. Не упоминай, что ты используешь "контекст" или "документы" — отвечай \
 как обычный ассистент компании.
 """
+
+_client = None
+
+
+def _get_client():
+    global _client
+    if _client is None:
+        api_key = os.environ.get("GROQ_API_KEY")
+        _client = OpenAI(api_key=api_key, base_url="https://api.groq.com/openai/v1")
+    return _client
 
 
 def generate_answer(question: str, context_chunks: list[dict]) -> tuple[str, bool]:
@@ -35,23 +48,25 @@ def generate_answer(question: str, context_chunks: list[dict]) -> tuple[str, boo
     context_text = "\n\n---\n\n".join(c["content"] for c in context_chunks)
     user_message = f"Контекст из документов компании:\n{context_text}\n\nВопрос клиента: {question}"
 
-    api_key = os.environ.get("ANTHROPIC_API_KEY")
+    api_key = os.environ.get("GROQ_API_KEY")
     if not api_key:
         # Без ключа — честно возвращаем заглушку, чтобы демо не падало молча.
         preview = context_chunks[0]["content"][:200]
         return (
-            f"[ДЕМО-РЕЖИМ, ANTHROPIC_API_KEY не задан]\n"
+            f"[ДЕМО-РЕЖИМ, GROQ_API_KEY не задан]\n"
             f"Нашёл релевантный фрагмент документа:\n«{preview}...»\n"
-            f"С настоящим API-ключом здесь будет связный ответ от Claude.",
+            f"С настоящим API-ключом здесь будет связный ответ от модели.",
             True,
         )
 
-    client = Anthropic(api_key=api_key)
-    response = client.messages.create(
-        model="claude-sonnet-4-6",
+    client = _get_client()
+    response = client.chat.completions.create(
+        model="llama-3.3-70b-versatile",
         max_tokens=500,
-        system=SYSTEM_PROMPT,
-        messages=[{"role": "user", "content": user_message}],
+        messages=[
+            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "user", "content": user_message},
+        ],
     )
-    answer = "".join(block.text for block in response.content if block.type == "text")
+    answer = response.choices[0].message.content
     return answer, True
